@@ -1,0 +1,10 @@
+{
+  "sha256": "18f366bbe8c9226d1646d79866eb011bd13cfbca01d74c3781edbc1a73ad651d",
+  "version": "5.35.0",
+  "watchedEntries": [
+    "com/yapzhenyie/GadgetsMenu/GadgetsMenu.class",
+    "com/yapzhenyie/GadgetsMenu/utils/ServerVersion.class",
+    "com/yapzhenyie/GadgetsMenu/utils/VersionManager$1.class",
+    "com/yapzhenyie/GadgetsMenu/utils/VersionManager.class"
+  ]
+}

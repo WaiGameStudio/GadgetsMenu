@@ -1,0 +1,3 @@
+#!/bin/sh
+# Audit staged bytes rather than the working copy.
+exec python tools/public_audit.py

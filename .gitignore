@@ -1,0 +1,24 @@
+# Only reviewed public files are tracked; tools/public_audit.py enforces the exact list.
+.gradle/
+**/build/
+.idea/
+*.iml
+*.ipr
+*.iws
+__pycache__/
+*.pyc
+local.properties
+/upstream/
+/libs/
+/src/
+/workspace.json
+/overlay-lock.json
+*.jar
+*.class
+/gradle/
+/gradlew
+/gradlew.bat
+/patch/build.py
+/docs/*
+!/docs/README.md
+!/docs/LICENSE

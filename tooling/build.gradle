@@ -1,0 +1,14 @@
+plugins { id 'java' }
+
+def recaf = providers.gradleProperty('recafJar').orElse(
+        new File(System.getenv('APPDATA') ?: System.getProperty('user.home'), 'Recaf/recaf.jar').path)
+dependencies { implementation files(recaf) }
+sourceSets.main.java {
+    srcDirs = ['src/main/java', '../patch']
+    include 'local/gadgetsmenu/Inventory.java', 'PatchVersionManager.java'
+}
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 21
+    options.compilerArgs += ['-proc:none']
+}

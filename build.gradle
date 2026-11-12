@@ -1,0 +1,143 @@
+import groovy.json.JsonSlurper
+import org.gradle.plugins.ide.idea.model.SingleEntryModuleLibrary
+
+plugins {
+    id 'java'
+    id 'idea'
+}
+
+group = 'local.gadgetsmenu'
+def selection = file('workspace.json')
+def workspace = selection.exists() ? new JsonSlurper().parse(selection) : null
+def snapshot = workspace ? file(workspace.active) : file('upstream/not-prepared')
+def upstream = new File(snapshot, 'artifact.jar')
+def manifest = new File(snapshot, 'manifest.json')
+version = (manifest.exists() ? new JsonSlurper().parse(manifest).version : 'unprepared') + '-local'
+def python = providers.gradleProperty('python').orElse('python')
+def recaf = providers.gradleProperty('recafJar').orElse(
+        new File(System.getenv('APPDATA') ?: System.getProperty('user.home'), 'Recaf/recaf.jar').path)
+def localJar = layout.buildDirectory.file("libs/GadgetsMenu-${version}.jar")
+def entry = 'com/yapzhenyie/GadgetsMenu/utils/VersionManager.class'
+def patchedClass = layout.buildDirectory.file("patched/${entry}")
+
+// Recovered source stays private and is NOT part of the default compilation.
+sourceSets {
+    main {
+        java.srcDirs = ['extensions/src/main/java']
+        resources.srcDirs = ['extensions/src/main/resources']
+    }
+    stubs { java { srcDirs = ['patch/test']; include 'org/bukkit/**/*.java' } }
+    donor { java.srcDirs = ['patch/src'] }
+    test { java { srcDirs = ['patch/test']; exclude 'org/bukkit/**' } }
+}
+dependencies {
+    compileOnly files(upstream)
+    compileOnly fileTree('libs') { include '*.jar' }
+    donorCompileOnly sourceSets.stubs.output
+    testCompileOnly files(upstream)
+    testImplementation sourceSets.stubs.output
+}
+tasks.named('test') { enabled = false }
+tasks.withType(JavaCompile).configureEach {
+    options.encoding = 'UTF-8'
+    options.release = 8
+    options.compilerArgs += ['-proc:none', '-Xlint:-options']
+}
+def maintenance = { Exec t, List<String> arguments ->
+    t.group = 'maintenance'
+    t.workingDir = rootDir
+    t.environment 'RECAF_JAR', recaf.get()
+    t.commandLine([python.get(), 'tools/workspace.py'] + arguments)
+}
+tasks.register('prepareUpstream', Exec) {
+    dependsOn ':tooling:classes'
+    group = 'maintenance'
+    doFirst {
+        if (!project.hasProperty('newJar')) throw new GradleException('Use -PnewJar=<legally obtained original JAR>')
+        maintenance(delegate, ['bootstrap', project.property('newJar').toString()])
+    }
+}
+tasks.register('verifyBaseline', Exec) { maintenance(delegate, ['verify-patch']) }
+tasks.named('compileJava') { dependsOn 'verifyBaseline' }
+tasks.named('compileTestJava') { dependsOn 'verifyBaseline' }
+tasks.register('patchVersionManager', JavaExec) {
+    dependsOn 'verifyBaseline', 'donorClasses', ':tooling:classes'
+    classpath = project(':tooling').sourceSets.main.runtimeClasspath
+    mainClass = 'PatchVersionManager'
+    args upstream.path, layout.buildDirectory.file("classes/java/donor/${entry}").get().asFile.path,
+            patchedClass.get().asFile.path
+    jvmArgs '-Xverify:all'
+}
+tasks.register('workspaceJar', Exec) {
+    dependsOn 'classes', 'patchVersionManager'
+    maintenance(delegate, ['assemble', '--output', localJar.get().asFile.path,
+                           '--patch-class', patchedClass.get().asFile.path])
+}
+// Neither donor, test stubs nor the thin extension jar is a deployable plugin.
+tasks.named('jar') { enabled = false }
+tasks.named('assemble') { dependsOn 'workspaceJar' }
+tasks.register('versionRegression', JavaExec) {
+    dependsOn 'testClasses', 'workspaceJar'
+    classpath = files(sourceSets.test.output.classesDirs, sourceSets.stubs.output.classesDirs, localJar)
+    mainClass = 'VersionManagerTest'
+    args 'patched'
+    jvmArgs '-Xverify:all'
+    standardOutput = new ByteArrayOutputStream()
+    doLast {
+        file('docs/verification').mkdirs()
+        def text = standardOutput.toString('UTF-8').replace('\r\n', '\n').replace('\r', '\n')
+        file('docs/verification/version-regression.txt').setText(text, 'UTF-8')
+        println text.readLines().last()
+    }
+}
+tasks.register('originalRegression', JavaExec) {
+    dependsOn 'testClasses'
+    classpath = files(sourceSets.test.output.classesDirs, sourceSets.stubs.output.classesDirs, upstream)
+    mainClass = 'VersionManagerTest'
+    args 'original'
+    jvmArgs '-Xverify:all'
+}
+tasks.register('workspaceTests', Exec) {
+    dependsOn ':tooling:classes'
+    maintenance(delegate, ['self-test'])
+}
+tasks.register('auditPublic', Exec) {
+    group = 'verification'
+    commandLine python.get(), 'tools/public_audit.py', '--files'
+}
+tasks.named('check') { dependsOn 'versionRegression', 'workspaceTests', 'auditPublic' }
+tasks.register('importUpstream', Exec) {
+    dependsOn ':tooling:classes'
+    group = 'maintenance'
+    doFirst {
+        if (!project.hasProperty('newJar')) throw new GradleException('Use -PnewJar=<path to official JAR>')
+        maintenance(delegate, ['import', project.property('newJar').toString()])
+    }
+}
+tasks.register('compareUpstream', Exec) {
+    dependsOn ':tooling:classes'
+    group = 'maintenance'
+    doFirst {
+        if (!project.hasProperty('candidate')) throw new GradleException('Use -Pcandidate=<snapshot directory>')
+        maintenance(delegate, ['compare', project.property('candidate').toString()])
+    }
+}
+tasks.register('decompileUpstream', Exec) {
+    dependsOn ':tooling:classes', 'verifyBaseline'
+    maintenance(delegate, ['decompile', snapshot.path])
+}
+idea {
+    module {
+        excludeDirs += [file('build'), file('.gradle'), file('src'), file('upstream'), file('docs/verification'),
+                        file('docs/decompiled-before'), file('docs/decompiled-after'), file('docs/pet-inspection')]
+        iml.whenMerged { module ->
+            module.dependencies.findAll { it instanceof SingleEntryModuleLibrary }.each { library ->
+                if (library.libraryFile.canonicalFile == upstream.canonicalFile && new File(snapshot, 'sources.jar').exists()) {
+                    library.sources += module.pathFactory.path(new File(snapshot, 'sources.jar'))
+                }
+            }
+        }
+    }
+    project { jdkName = '21'; languageLevel = 'JDK_1_8' }
+}
+tasks.wrapper { gradleVersion = '9.3.0'; distributionType = Wrapper.DistributionType.BIN }
